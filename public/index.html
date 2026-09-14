@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Elysian 24</title>
+  <style>
+        * { box-sizing: border-box; }
+
+    body {
+      font-family: sans-serif;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #89e1d3;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+    }
+
+    h2 {
+      font-size: 1.1rem;
+      margin-top: 30px;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      margin-bottom: 20px;
+    }
+
+    nav {
+      display: flex;
+      justify-content: center; /* Center items horizontally */
+      gap: 1em; /* Space between items */
+      margin-top: 40px;
+      padding-bottom: 40px;
+    }
+
+    nav a {
+      flex: 1; /* Equal width for all links */
+      display: flex;
+      justify-content: center; /* Center content horizontally */
+      align-items: center; /* Center content vertically */
+      text-align: center;
+      padding: 0.5em; /* Optional: add padding for spacing */
+    }
+
+    .nav-image {
+      width: 175px;
+      height: 90px;
+      object-fit: contain;
+    }
+
+  .frame-border {
+    border: 10px solid #EDDEA4;
+    outline: 5px solid #FF674D;
+   }
+
+  @font-face {
+    font-family: 'EventFont';
+    src: url('images/Schoolbell-Regular.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+  }
+ 
+  .text-box {
+    background: #89e1d3;
+    padding: 16px 20px;
+    margin-top: 40px;
+    margin-bottom: 40px;
+    width: 100%;
+    max-width: 780px;
+    box-sizing: border-box;
+    font-family: 'EventFont', sans-serif;
+    font-size: 1.4rem;
+    letter-spacing: 0.5px;
+    line-height: 1.4;
+  }
+
+
+  </style>
+</head>
+<body>
+
+  <img src="/images/e24.png" alt="Elysian 24">
+
+  <nav>
+    <a href="leaderboard.html"><img src="/images/lb-1.png" alt="Leaderboard" class="nav-image"></a>
+    <a href="riders.html"><img src="/images/r.png" alt="Riders" class="nav-image"></a>
+    <a href="teams.html"><img src="/images/t-1.png" alt="Teams" class="nav-image"></a>
+  </nav>
+
+  <main>
+
+ <div class="frame-border text-box">
+    This is a 24 hour bike ride through Elysian Park with checkpoints.  There will be BBQ.
+  </div>
+
+  <img class="frame-border" src="/images/map.png" alt="Elysian Park Route">
+
+<div class="frame-border text-box">
+    This is another box to check margins.  Nothing else is in here.
+  </div>
+
+
+  </main>
+
+</body>
+</html>

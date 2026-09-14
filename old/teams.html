@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Teams</title>
+
+<style>
+  body { font-family: sans-serif; margin: 20px; background-color: #89e1d3; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 30px; }
+  table { border-collapse: collapse; width: 100%; max-width: 500px; }
+  th, td { border: 1px solid #000; padding: 6px 10px; text-align: left; background:#EDDEA4; }
+  th { background: #FF674D; }
+  #updated { font-size: 0.85rem; color: #555; margin-top: 20px; }
+</style>
+</head>
+<body>
+<center>
+<img src="/images/e24.png" alt="Elysian 24" style="max-width: 100%; height: auto;">
+<nav>
+  <a href="index.html"><img src="/images/home.png" alt="Home" style="max-width: 7%; height: auto;"></a>
+  <a href="leaderboard.html"><img src="/images/lb-1.png" alt="Leaderboard" style="max-width: 15%; height: auto;"></a>
+  <a href="riders.html"><img src="/images/r.png" alt="Teams" style="max-width: 7%; height: auto;"></a>
+  <a href="/admin/index.html"><img src="/images/admin.png" alt="Admin" style="max-width: 15%; height: auto;"></a>
+</nav>
+<br>
+<br>
+<img src="/images/t-1.png" alt="Teams" style="max-width: 100%; height: auto;">
+
+<h1>Team Detail</h1>
+<label for="team">Team</label>
+<select id="team">
+  <option value="">-- select a team --</option>
+</select>
+
+<div class="sort-row">
+  <label><input type="radio" name="sort" value="fastest" checked> Fastest lap</label>
+  <label><input type="radio" name="sort" value="laps"> Most laps</label>
+</div>
+
+<div id="summary"></div>
+<div id="empty"></div>
+
+<table id="ridersTable" style="display:none">
+  <thead>
+    <tr><th>Number</th><th>Name</th><th>Laps</th><th>Fastest Lap</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>All Teams</h2>
+<table id="allTeamsTable">
+  <thead>
+    <tr><th>Team</th><th>Members</th><th>Total Laps</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<script>
+const teamEl = document.getElementById("team");
+const summaryEl = document.getElementById("summary");
+const emptyEl = document.getElementById("empty");
+const tableEl = document.getElementById("ridersTable");
+const tbodyEl = tableEl.querySelector("tbody");
+const sortRadios = document.querySelectorAll('input[name="sort"]');
+
+let currentRiders = [];
+
+function formatDuration(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = (seconds % 60).toFixed(1);
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+async function loadTeams() {
+  const [teamListRes, teamsRes] = await Promise.all([
+    fetch("/api/team-list"),
+    fetch("/api/teams"),
+  ]);
+  const teamList = await teamListRes.json();
+  const teamsLaps = await teamsRes.json();
+
+  const lapCountByTeam = {};
+  teamsLaps.forEach((t) => { lapCountByTeam[t.team] = t.lap_count; });
+
+  teamEl.innerHTML = '<option value="">-- select a team --</option>';
+  teamList.forEach((team) => {
+    const opt = document.createElement("option");
+    opt.value = team.name;
+    opt.textContent = `${team.name} (${team.rider_count})`;
+    teamEl.appendChild(opt);
+  });
+
+  const allTeamsBody = document.querySelector("#allTeamsTable tbody");
+  allTeamsBody.innerHTML = "";
+  teamList.forEach((team) => {
+    const tr = document.createElement("tr");
+    tr.style.cursor = "pointer";
+    tr.innerHTML = `<td>${team.name}</td><td>${team.rider_count}</td><td>${lapCountByTeam[team.name] || 0}</td>`;
+    tr.addEventListener("click", () => {
+      teamEl.value = team.name;
+      loadTeamRoster(team.name);
+    });
+    allTeamsBody.appendChild(tr);
+  });
+}
+
+async function loadTeamRoster(teamName) {
+  if (!teamName) {
+    currentRiders = [];
+    render();
+    return;
+  }
+
+  const [cardsRes, leaderboardRes] = await Promise.all([
+    fetch("/api/cards"),
+    fetch("/api/leaderboard"),
+  ]);
+  const cards = await cardsRes.json();
+  const leaderboard = await leaderboardRes.json();
+
+  const lapCountByNumber = {};
+  leaderboard.most_laps.forEach((r) => { lapCountByNumber[r.number] = r.lap_count; });
+
+  const fastestByNumber = {};
+  leaderboard.fastest_laps.forEach((lap) => {
+    const existing = fastestByNumber[lap.number];
+    if (existing === undefined || lap.duration_seconds < existing) {
+      fastestByNumber[lap.number] = lap.duration_seconds;
+    }
+  });
+
+  currentRiders = cards
+    .filter((card) => card.team === teamName)
+    .map((card) => ({
+      number: card.number,
+      name: card.name,
+      lap_count: lapCountByNumber[card.number] || 0,
+      fastest_seconds: fastestByNumber[card.number] !== undefined ? fastestByNumber[card.number] : null,
+    }));
+
+  const totalLaps = currentRiders.reduce((sum, r) => sum + r.lap_count, 0);
+  summaryEl.textContent = `${teamName} — ${currentRiders.length} rider(s), ${totalLaps} total lap(s)`;
+  render();
+}
+
+function getSortMode() {
+  return document.querySelector('input[name="sort"]:checked').value;
+}
+
+function render() {
+  tbodyEl.innerHTML = "";
+
+  if (currentRiders.length === 0) {
+    tableEl.style.display = "none";
+    emptyEl.textContent = teamEl.value ? "No riders registered on this team yet." : "";
+    return;
+  }
+  emptyEl.textContent = "";
+  tableEl.style.display = "";
+
+  let rows = [...currentRiders];
+
+  if (getSortMode() === "fastest") {
+    // Riders with a completed lap, fastest first; riders with no lap yet
+    // trail behind in the order they were listed.
+    const withTime = rows.filter((r) => r.fastest_seconds !== null)
+                          .sort((a, b) => a.fastest_seconds - b.fastest_seconds);
+    const withoutTime = rows.filter((r) => r.fastest_seconds === null);
+    rows = [...withTime, ...withoutTime];
+  } else {
+    rows.sort((a, b) => b.lap_count - a.lap_count);
+  }
+
+  rows.forEach((r) => {
+    const tr = document.createElement("tr");
+    const fastest = r.fastest_seconds !== null ? formatDuration(r.fastest_seconds) : "-";
+    tr.innerHTML = `<td>${r.number}</td><td>${r.name || ""}</td><td>${r.lap_count}</td><td>${fastest}</td>`;
+    tbodyEl.appendChild(tr);
+  });
+}
+
+teamEl.addEventListener("change", () => loadTeamRoster(teamEl.value));
+sortRadios.forEach((r) => r.addEventListener("change", render));
+
+loadTeams();
+</script>
+</body>
+</html>

@@ -1,0 +1,1071 @@
+from flask import Flask, request, jsonify, send_from_directory, Response
+import sqlite3
+import re
+from datetime import datetime, timezone, timedelta
+import hmac
+import os
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+PUBLIC_DIR = os.path.join(APP_DIR, "public")
+DB_PATH = os.path.join(APP_DIR, "race.db")   # outside PUBLIC_DIR — never served
+
+app = Flask(__name__, static_folder=PUBLIC_DIR, static_url_path="")
+
+# Reject request bodies above this size outright, before Flask even tries to
+# parse them. This isn't format validation on its own, but it keeps a
+# malformed/huge payload from being read into memory just to fail validation
+# a moment later.
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # 64 KB is generous for these forms
+
+# Simple password gate for the /admin/ page (public/admin/index.html) and
+# the admin-only write APIs below. This is HTTP Basic Auth -- the browser's
+# built-in login prompt. It's a quick deterrent, not strong security on its
+# own; it relies on the site already being served over HTTPS (e.g. via
+# Cloudflare Tunnel) so the credentials aren't sent in the clear.
+#
+# Note: writer.html and reader.html are NOT behind this gate. They're served
+# publicly at the site root and authenticate their API calls with
+# DEVICE_TOKEN instead (see below).
+#
+# NOTE: these values are hardcoded here rather than read from an environment
+# variable. That's only tolerable because this file is not reachable over
+# HTTP: the static folder is PUBLIC_DIR (a subdirectory), so /server.py and
+# /race.db are not servable. If you ever point static_folder back at APP_DIR,
+# /server.py becomes downloadable and these values are exposed to anyone.
+# Change both values below to something real before a live event.
+ADMIN_USERNAME = "speed"
+ADMIN_PASSWORD = "1234"
+
+#
+# CAVEAT: writer.html and reader.html are served publicly (no auth), so
+# anyone who can load one of them can read this token from the page source.
+# It deters casual misuse and lets you rotate around a lost phone, but it is
+# not a real secret -- don't rely on it to protect data from a deliberate
+# attacker.
+DEVICE_TOKEN = "Kt2en0X0GracCJ4hfdcAO4Dh0ZDOuKeV"
+
+# Routes that write or delete data, only ever called from the
+# password-protected admin page (index.html under /admin). Matched below as
+# (path prefix, method); bare prefixes are used where the id/number is part
+# of the path (e.g. /api/cards/42). GETs under these prefixes are
+# intentionally left open (public roster/scan reads).
+ADMIN_ONLY_API_PREFIXES = (
+    "/api/cards/",     # PUT/DELETE by number
+    "/api/scans/",     # PUT/DELETE by id, and POST /api/scans/manual
+    "/api/team-list",  # POST (add), PUT/DELETE by name
+)
+
+# Routes called by unattended field kiosks (writer.html / reader.html).
+# Protected by DEVICE_TOKEN instead of a login prompt, since these devices
+# sit at a checkpoint for hours without anyone available to type a password.
+FIELD_WRITE_ROUTES = {
+    ("/api/cards", "POST"),
+    ("/api/scan", "POST"),
+    ("/api/heartbeat", "POST"),
+}
+
+
+def _check_admin_auth():
+    auth = request.authorization
+    return bool(auth) and auth.username == ADMIN_USERNAME and auth.password == ADMIN_PASSWORD
+
+
+def _unauthorized_response():
+    return Response(
+        "Authentication required.",
+        401,
+        {"WWW-Authenticate": 'Basic realm="Admin Area"'},
+    )
+
+
+@app.before_request
+def require_auth():
+    path = request.path
+    method = request.method
+
+    is_admin_page = path.startswith("/admin")
+    is_admin_api_write = (
+        path.startswith(ADMIN_ONLY_API_PREFIXES) and method in ("POST", "PUT", "DELETE")
+    )
+
+    if is_admin_page or is_admin_api_write:
+        if not _check_admin_auth():
+            return _unauthorized_response()
+        return  # authenticated as admin; no need to also check a device token
+
+    if (path, method) in FIELD_WRITE_ROUTES:
+        token = request.headers.get("X-Device-Token", "")
+        if not hmac.compare_digest(token, DEVICE_TOKEN):
+            return jsonify({"error": "invalid or missing device token"}), 403
+
+
+@app.route("/admin")
+@app.route("/admin/")
+def admin_index():
+    # Flask's static handler serves /admin/index.html directly, but a bare
+    # /admin or /admin/ request needs an explicit route to resolve to that
+    # same file -- static serving doesn't do directory-index resolution.
+    return send_from_directory(os.path.join(PUBLIC_DIR, "admin"), "index.html")
+
+# The course is a loop: Gate 1 -> Gate 2 -> Gate 3 -> back to Gate 1.
+# A completed lap requires all four punches in that order. The gate-1
+# punch that closes a lap also serves as the gate-1 punch that opens
+# the next one (no separate "start" tap needed between laps).
+GATE_SEQUENCE = ["1", "2", "3", "1"]
+SEGMENT_LABELS = ["1-2", "2-3", "3-1"]  # segment i runs from gate i to gate i+1 in GATE_SEQUENCE
+VALID_GATES = ("1", "2", "3")
+
+
+# Bike class options. A racer's class is one of these four values.
+BIKE_CLASSES = ["Road", "Fixed", "Mountain", "Other"]
+
+# Device types accepted from reader.html / writer.html heartbeats.
+VALID_DEVICE_TYPES = ("reader", "writer")
+
+
+# ---- input validation -------------------------------------------------
+#
+# Every value that comes in over the network (JSON body fields, query
+# strings, and values embedded in the URL path) is validated here before
+# it's used anywhere else. Validators either return a cleaned-up value or
+# raise ValidationError, which the handler below turns into a uniform
+# 400 response -- so route functions never need their own ad-hoc checks.
+
+class ValidationError(Exception):
+    def __init__(self, message):
+        super().__init__(message)
+        self.message = message
+
+
+@app.errorhandler(ValidationError)
+def _handle_validation_error(err):
+    return jsonify({"error": err.message}), 400
+
+# Racer numbers: comment above (see next_number) says they're expected to
+# run 0-999. Digits only, 1-4 characters so a stray "999999999999" or a
+# non-numeric value like "1;DROP" can't slip through.
+NUMBER_RE = re.compile(r"^[0-9]{1,4}$")
+
+# Device ids are generated client-side (crypto random string stored in
+# localStorage) -- restrict to a conservative safe charset/length rather
+# than trusting whatever a browser (or a forged request) sends.
+DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+MAX_NAME_LEN = 100
+MAX_TEAM_LEN = 100
+MAX_TIMESTAMP_LEN = 40
+
+
+def get_json_body():
+    """Parse the request body as a JSON object. Anything else (invalid
+    JSON, a JSON array/string/number, or no body at all) is rejected
+    rather than silently treated as {}"""
+    if not request.is_json:
+        raise ValidationError("request body must be JSON (Content-Type: application/json)")
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise ValidationError("request body must be a JSON object")
+    return data
+
+
+def require_str(data, field, max_len=200, required=True):
+    """Pull a trimmed string field out of a parsed JSON body."""
+    value = data.get(field)
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ValidationError(f"{field} must be a string")
+    value = value.strip()
+    if required and not value:
+        raise ValidationError(f"{field} is required")
+    if len(value) > max_len:
+        raise ValidationError(f"{field} must be at most {max_len} characters")
+    if any(ord(ch) < 32 for ch in value):
+        raise ValidationError(f"{field} contains invalid control characters")
+    return value
+
+
+def require_number_field(data, field="number"):
+    value = require_str(data, field, max_len=10)
+    if not NUMBER_RE.match(value):
+        raise ValidationError(f"{field} must be 1-4 digits (0-999)")
+    return value
+
+
+def validate_number_param(number):
+    """Validate a racer number that arrives as part of the URL path."""
+    if not number or not NUMBER_RE.match(number):
+        raise ValidationError("number in URL must be 1-4 digits (0-999)")
+    return number
+
+
+def require_gate_field(data, field="gate", allow_blank=False):
+    value = require_str(data, field, max_len=1, required=not allow_blank)
+    if value == "" and allow_blank:
+        return value
+    if value not in VALID_GATES:
+        raise ValidationError(f"{field} must be one of: {', '.join(VALID_GATES)}")
+    return value
+
+
+def require_class_field(data, field="class"):
+    value = require_str(data, field, max_len=20)
+    if value not in BIKE_CLASSES:
+        raise ValidationError(f"{field} must be one of: {', '.join(BIKE_CLASSES)}")
+    return value
+
+
+def optional_team_field(data, field="team"):
+    value = require_str(data, field, max_len=MAX_TEAM_LEN, required=False)
+    return value or None
+
+
+def require_bool_field(data, field, default=False):
+    if field not in data:
+        return default
+    value = data.get(field)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    raise ValidationError(f"{field} must be a boolean")
+
+
+def require_device_id_field(data, field="device_id"):
+    value = require_str(data, field, max_len=128)
+    if not DEVICE_ID_RE.match(value):
+        raise ValidationError(f"{field} must be 1-128 characters of letters, digits, '-' or '_'")
+    return value
+
+
+def optional_device_type_field(data, field="device_type", default="reader"):
+    value = require_str(data, field, max_len=20, required=False) or default
+    if value not in VALID_DEVICE_TYPES:
+        raise ValidationError(f"{field} must be one of: {', '.join(VALID_DEVICE_TYPES)}")
+    return value
+
+
+# Canonical on-disk form for every timestamp we store:
+#     YYYY-MM-DDTHH:MM:SS.ffffffZ   (UTC, always 24 chars)
+#
+# Why: scanned_at is compared as a *string* in two places -- the dedupe
+# window in /api/scan (scanned_at >= ?) and the ORDER BY scanned_at that
+# drives lap/segment computation. String order equals time order only when
+# every value has the same width and the same zone. The old writer used
+# datetime.isoformat() (variable width -- it drops ".ffffff" when the
+# microseconds are zero), and manual scans used to be stored in whatever
+# offset the client sent, so a single +05:00 row was enough to break both
+# comparisons.
+TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+
+
+def parse_timestamp(value):
+    """Parse an ISO 8601 string into an aware datetime in UTC.
+
+    - Accepts a trailing Z/z (datetime.fromisoformat only handles that on
+      Python 3.11+, so it's swapped for +00:00 first).
+    - Accepts any explicit UTC offset and converts to UTC.
+    - Naive values (no offset) are assumed to be UTC.
+    - Bare dates ("2025-01-15") are rejected -- a scan stamped with a date
+      only would silently mean midnight.
+
+    Raises ValueError on anything unparseable."""
+    s = value
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    if "T" not in s and " " not in s:
+        raise ValueError("timestamp must include a time component")
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def to_canonical(dt):
+    """Aware datetime -> canonical 24-char UTC string for storage."""
+    return dt.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT)
+
+
+def optional_iso_timestamp_field(data, field, required=False):
+    value = require_str(data, field, max_len=MAX_TIMESTAMP_LEN, required=required)
+    if not value:
+        return None
+    try:
+        dt = parse_timestamp(value)
+    except ValueError:
+        raise ValidationError(f"{field} must be a valid ISO 8601 timestamp")
+    # Store canonical UTC, not the client's raw string: see TIMESTAMP_FORMAT.
+    return to_canonical(dt)
+
+
+def require_iso_timestamp_field(data, field):
+    value = optional_iso_timestamp_field(data, field, required=True)
+    return value
+
+
+def validate_team_name_param(name):
+    """Validate a team name that arrives as part of the URL path."""
+    if name is None:
+        raise ValidationError("name is required")
+    name = name.strip()
+    if not name:
+        raise ValidationError("name is required")
+    if len(name) > MAX_TEAM_LEN:
+        raise ValidationError(f"name must be at most {MAX_TEAM_LEN} characters")
+    if any(ord(ch) < 32 for ch in name):
+        raise ValidationError("name contains invalid control characters")
+    return name
+
+
+def require_team_name_field(data, field="name"):
+    return require_str(data, field, max_len=MAX_TEAM_LEN)
+
+
+def require_racer_name_field(data, field="name"):
+    return require_str(data, field, max_len=MAX_NAME_LEN)
+
+
+# -------------------------------------------------------------------------
+
+
+def get_db():
+    # timeout=5: if another kiosk's request is holding the write lock,
+    # wait up to 5 seconds for it to clear instead of failing immediately
+    # with "database is locked" (the default is timeout=0, i.e. no wait --
+    # which is exactly what happens when a checkpoint tap and a heartbeat
+    # land on the db at the same moment).
+    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db()
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cards (
+            number TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            team TEXT,
+            class TEXT,
+            written_at TEXT NOT NULL
+        )
+        """
+    )
+    existing_cols = [row["name"] for row in conn.execute("PRAGMA table_info(cards)")]
+    if "team" not in existing_cols:
+        conn.execute("ALTER TABLE cards ADD COLUMN team TEXT")
+    if "class" not in existing_cols:
+        conn.execute("ALTER TABLE cards ADD COLUMN class TEXT")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            number TEXT NOT NULL,
+            gate TEXT NOT NULL,
+            scanned_at TEXT NOT NULL
+        )
+        """
+    )
+    # Migration: earlier versions called this column "location".
+    existing_scan_cols = [row["name"] for row in conn.execute("PRAGMA table_info(scans)")]
+    if "gate" not in existing_scan_cols and "location" in existing_scan_cols:
+        conn.execute("ALTER TABLE scans RENAME COLUMN location TO gate")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS devices (
+            device_id TEXT PRIMARY KEY,
+            gate TEXT,
+            scanning INTEGER NOT NULL DEFAULT 0,
+            device_type TEXT NOT NULL DEFAULT 'reader',
+            last_seen TEXT NOT NULL
+        )
+        """
+    )
+    existing_device_cols = [row["name"] for row in conn.execute("PRAGMA table_info(devices)")]
+    if "device_type" not in existing_device_cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN device_type TEXT NOT NULL DEFAULT 'reader'")
+    if "gate" not in existing_device_cols and "location" in existing_device_cols:
+        conn.execute("ALTER TABLE devices RENAME COLUMN location TO gate")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS teams (
+            name TEXT PRIMARY KEY
+        )
+        """
+    )
+    # Seed the teams registry with any team names already in use on cards,
+    # so pre-existing data shows up in team management right away.
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO teams (name)
+        SELECT DISTINCT team FROM cards WHERE team IS NOT NULL AND team != ''
+        """
+    )
+    # One-time migration: normalize rows written by older code (variable
+    # width from isoformat(), or the client's raw offset on manual scans)
+    # to the canonical form, so string ORDER BY / >= comparisons stay
+    # chronological. Idempotent: canonical values round-trip to themselves,
+    # so after the first run this is a cheap no-op scan. Runs at import
+    # time, before app.run(), i.e. before any request can hit the database.
+    for row in conn.execute("SELECT id, scanned_at FROM scans").fetchall():
+        try:
+            canonical = to_canonical(parse_timestamp(row["scanned_at"]))
+        except ValueError:
+            app.logger.warning(
+                "scans id=%s has unparseable scanned_at %r; left as-is",
+                row["id"], row["scanned_at"],
+            )
+            continue
+        if canonical != row["scanned_at"]:
+            conn.execute(
+                "UPDATE scans SET scanned_at = ? WHERE id = ?",
+                (canonical, row["id"]),
+            )
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+
+# ---- pages ----
+# Individual .html files (writer.html, reader.html, leaderboard.html, etc.)
+# don't need explicit routes -- Flask's static file handling, configured
+# above via static_folder=PUBLIC_DIR and static_url_path="", serves any file
+# in PUBLIC_DIR at its own path automatically. The bare root path and /admin
+# (route above) are the only ones that need real routes, since neither is a
+# filename the static handler would match.
+
+@app.route("/")
+def index():
+    return send_from_directory(PUBLIC_DIR, "index.html")
+
+# ---- api ----
+
+@app.route("/api/heartbeat", methods=["POST"])
+def heartbeat():
+    """Called periodically by reader.html and writer.html so the admin page
+    can tell a device is alive. Each browser generates its own persistent
+    device_id (stored in localStorage) the first time it loads the page.
+    device_type distinguishes checkpoint readers from card writers;
+    defaults to 'reader' so older reader.html pages that don't send it
+    keep working unchanged."""
+    data = get_json_body()
+    device_id = require_device_id_field(data)
+    gate = require_gate_field(data, allow_blank=True)
+    scanning = require_bool_field(data, "scanning", default=False)
+    device_type = optional_device_type_field(data)
+
+    conn = get_db()
+    conn.execute(
+        """
+        INSERT INTO devices (device_id, gate, scanning, device_type, last_seen) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(device_id) DO UPDATE SET
+            gate=excluded.gate,
+            scanning=excluded.scanning,
+            device_type=excluded.device_type,
+            last_seen=excluded.last_seen
+        """,
+        (device_id, gate, int(scanning), device_type, to_canonical(datetime.now(timezone.utc))),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/devices", methods=["GET"])
+def list_devices():
+    """All known devices (checkpoint readers and card writers) and when
+    they last checked in. Whether a device counts as online/offline is
+    left to the caller (admin/index.html) based on how stale last_seen is --
+    keeps the "offline" threshold easy to tune without a server change."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT device_id, gate, scanning, device_type, last_seen FROM devices ORDER BY device_type ASC, gate ASC"
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/next-number", methods=["GET"])
+def next_number():
+    """Highest existing numeric card number + 1, no zero-padding.
+    Racer numbers are expected to run 0-999; nothing here enforces it. Used by writer.html to pre-fill the number
+    field so nobody has to track it by hand (and so two riders can't
+    collide on the same number)."""
+    conn = get_db()
+    rows = conn.execute("SELECT number FROM cards").fetchall()
+    conn.close()
+
+    highest = -1
+    for row in rows:
+        try:
+            n = int(row["number"])
+            highest = max(highest, n)
+        except (TypeError, ValueError):
+            continue  # non-numeric number in the table, ignore for this purpose
+
+    return jsonify({"number": str(highest + 1)})
+
+
+@app.route("/api/cards", methods=["GET"])
+def list_cards():
+    """All registered racers (name + number + team + class), for the roster table."""
+    conn = get_db()
+    rows = conn.execute("SELECT number, name, team, class FROM cards ORDER BY CAST(number AS INTEGER) ASC").fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/cards", methods=["POST"])
+def register_card():
+    """Called by writer.html right before it writes the NFC tag.
+    Stores the name <-> number mapping (plus an optional team and a
+    required bike class) so the reader can show names and the leaderboard
+    can total up team laps and split standings by class. Refuses to hand
+    a number that's already taken unless force=true (used for the
+    deliberate "reissue a broken card" case)."""
+    data = get_json_body()
+    name = require_racer_name_field(data)
+    number = require_number_field(data)
+    team = optional_team_field(data)
+    bike_class = require_class_field(data)
+    force = require_bool_field(data, "force", default=False)
+
+    conn = get_db()
+
+    existing = conn.execute("SELECT name FROM cards WHERE number = ?", (number,)).fetchone()
+    if existing and not force:
+        conn.close()
+        return (
+            jsonify(
+                {
+                    "error": f"Number {number} is already assigned to {existing['name']}. "
+                    "Enable 'reissue' to overwrite it on purpose."
+                }
+            ),
+            409,
+        )
+
+    conn.execute(
+        """
+        INSERT INTO cards (number, name, team, class, written_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(number) DO UPDATE SET
+            name=excluded.name, team=excluded.team, class=excluded.class, written_at=excluded.written_at
+        """,
+        (number, name, team, bike_class, to_canonical(datetime.now(timezone.utc))),
+    )
+    if team:
+        # Keep the teams registry in sync with whatever writer.html's team
+        # dropdown was set to, so it shows up in admin's Manage Teams too.
+        conn.execute("INSERT OR IGNORE INTO teams (name) VALUES (?)", (team,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok", "number": number, "name": name, "team": team, "class": bike_class})
+
+
+@app.route("/api/cards/<number>", methods=["PUT"])
+def update_card(number):
+    """Admin edit: change a racer's name, number, team, and/or class.
+    Renumbering also updates every scan already on file for that racer so
+    lap history stays attached to the right person."""
+    number = validate_number_param(number)
+
+    data = get_json_body()
+    raw_new_number = require_str(data, "number", max_len=10, required=False)
+    new_number = validate_number_param(raw_new_number) if raw_new_number else number
+    new_name = require_racer_name_field(data)
+    new_team = optional_team_field(data)
+    new_class = require_class_field(data)
+
+    conn = get_db()
+    existing = conn.execute("SELECT number FROM cards WHERE number = ?", (number,)).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({"error": f"No racer with number {number}"}), 404
+
+    if new_number != number:
+        conflict = conn.execute("SELECT number FROM cards WHERE number = ?", (new_number,)).fetchone()
+        if conflict:
+            conn.close()
+            return jsonify({"error": f"Number {new_number} is already in use"}), 409
+
+    conn.execute(
+        "UPDATE cards SET number = ?, name = ?, team = ?, class = ? WHERE number = ?",
+        (new_number, new_name, new_team, new_class, number),
+    )
+    if new_number != number:
+        conn.execute("UPDATE scans SET number = ? WHERE number = ?", (new_number, number))
+    if new_team:
+        conn.execute("INSERT OR IGNORE INTO teams (name) VALUES (?)", (new_team,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok", "number": new_number, "name": new_name, "team": new_team, "class": new_class})
+
+
+
+@app.route("/api/cards/<number>", methods=["DELETE"])
+def delete_card(number):
+    """Admin delete: removes the racer and every scan on file for them."""
+    number = validate_number_param(number)
+
+    conn = get_db()
+    cur = conn.execute("DELETE FROM cards WHERE number = ?", (number,))
+    conn.execute("DELETE FROM scans WHERE number = ?", (number,))
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+
+    if deleted == 0:
+        return jsonify({"error": f"No racer with number {number}"}), 404
+    return jsonify({"status": "ok", "number": number})
+
+
+@app.route("/api/scan", methods=["POST"])
+def record_scan():
+    """Called by reader.html every time a card is tapped at a checkpoint.
+    If the same card is tapped at the same gate again within 2 minutes,
+    the repeat is dropped and the earliest scan is what stays on disk --
+    keeps a lingering card or a nervous double-tap from creating extra
+    scans."""
+    data = get_json_body()
+    number = require_number_field(data)
+    gate = require_gate_field(data)
+
+    conn = get_db()
+
+    name_row = conn.execute("SELECT name FROM cards WHERE number = ?", (number,)).fetchone()
+    name = name_row["name"] if name_row else None
+
+    cutoff = to_canonical(datetime.now(timezone.utc) - timedelta(minutes=2))
+    dup = conn.execute(
+        """
+        SELECT scanned_at FROM scans
+        WHERE number = ? AND gate = ? AND scanned_at >= ?
+        ORDER BY scanned_at ASC LIMIT 1
+        """,
+        (number, gate, cutoff),
+    ).fetchone()
+
+    if dup:
+        conn.close()
+        return jsonify(
+            {
+                "status": "duplicate",
+                "number": number,
+                "name": name,
+                "gate": gate,
+                "earliest_scan": dup["scanned_at"],
+            }
+        )
+
+    ts = to_canonical(datetime.now(timezone.utc))
+    conn.execute(
+        "INSERT INTO scans (number, gate, scanned_at) VALUES (?, ?, ?)",
+        (number, gate, ts),
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify(
+        {
+            "status": "ok",
+            "number": number,
+            "name": name,
+            "gate": gate,
+            "scanned_at": ts,
+        }
+    )
+
+
+@app.route("/api/scans", methods=["GET"])
+def list_scans():
+    """Handy for sanity-checking the database from a browser/curl."""
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT scans.id, scans.number, cards.name, scans.gate, scans.scanned_at
+        FROM scans
+        LEFT JOIN cards ON cards.number = scans.number
+        ORDER BY scans.id DESC
+        LIMIT 200
+        """
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/scans/manual", methods=["POST"])
+def add_manual_scan():
+    """Admin-only way to add a scan the reader missed. Skips the 2-minute
+    dedupe check that /api/scan applies, since this is a deliberate,
+    one-off correction rather than a live checkpoint tap."""
+    data = get_json_body()
+    number = require_number_field(data)
+    gate = require_gate_field(data)
+    scanned_at = (
+        optional_iso_timestamp_field(data, "scanned_at")
+        or to_canonical(datetime.now(timezone.utc))
+    )
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO scans (number, gate, scanned_at) VALUES (?, ?, ?)",
+        (number, gate, scanned_at),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok", "number": number, "gate": gate, "scanned_at": scanned_at})
+
+
+@app.route("/api/scans/<int:scan_id>", methods=["PUT"])
+def update_scan(scan_id):
+    """Admin edit: correct a scan's racer number, gate, or timestamp."""
+    data = get_json_body()
+    number = require_number_field(data)
+    gate = require_gate_field(data)
+    scanned_at = require_iso_timestamp_field(data, "scanned_at")
+
+    conn = get_db()
+    cur = conn.execute(
+        "UPDATE scans SET number = ?, gate = ?, scanned_at = ? WHERE id = ?",
+        (number, gate, scanned_at, scan_id),
+    )
+    conn.commit()
+    updated = cur.rowcount
+    conn.close()
+
+    if updated == 0:
+        return jsonify({"error": f"No scan with id {scan_id}"}), 404
+    return jsonify({"status": "ok", "id": scan_id, "number": number, "gate": gate, "scanned_at": scanned_at})
+
+
+@app.route("/api/scans/<int:scan_id>", methods=["DELETE"])
+def delete_scan(scan_id):
+    conn = get_db()
+    cur = conn.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+
+    if deleted == 0:
+        return jsonify({"error": f"No scan with id {scan_id}"}), 404
+    return jsonify({"status": "ok", "id": scan_id})
+
+
+def get_racer_scans_with_laps(number):
+    """Every scan for one racer, in recorded order, each tagged with which
+    lap attempt it belongs to. A lap is Gate 1 -> Gate 2 -> Gate 3 -> Gate 1;
+    the Gate 1 scan that closes a lap also opens the next one, so it's
+    tagged with the lap it closes and carries that lap's duration. A scan
+    that arrives out of the expected sequence is tagged with lap=None."""
+    conn = get_db()
+    scans = conn.execute(
+        "SELECT id, gate, scanned_at FROM scans WHERE number = ? ORDER BY scanned_at ASC",
+        (number,),
+    ).fetchall()
+    conn.close()
+
+    rows = []
+    idx = 0
+    t = [None, None, None, None]
+    lap_attempt = 0
+
+    for s in scans:
+        gate = s["gate"]
+        ts = s["scanned_at"]
+        row = {
+            "id": s["id"],
+            "gate": gate,
+            "scanned_at": ts,
+            "lap": None,
+            "duration_seconds": None,
+        }
+
+        if gate == GATE_SEQUENCE[idx]:
+            if idx == 0 and lap_attempt == 0:
+                lap_attempt = 1  # the very first gate-1 punch of the event
+            row["lap"] = lap_attempt
+            t[idx] = ts
+
+            if idx == 3:
+                seg_1_2 = (parse_timestamp(t[1]) - parse_timestamp(t[0])).total_seconds()
+                seg_2_3 = (parse_timestamp(t[2]) - parse_timestamp(t[1])).total_seconds()
+                seg_3_1 = (parse_timestamp(t[3]) - parse_timestamp(t[2])).total_seconds()
+                row["duration_seconds"] = seg_1_2 + seg_2_3 + seg_3_1
+                # This same punch reopens the course for the next lap.
+                t[0] = t[3]
+                t[1] = t[2] = t[3] = None
+                idx = 1
+                lap_attempt += 1
+            else:
+                idx += 1
+        # else: out-of-sequence scan, leave lap=None
+
+        rows.append(row)
+
+    return rows
+
+
+@app.route("/api/racer/<number>", methods=["GET"])
+def racer_detail(number):
+    number = validate_number_param(number)
+
+    conn = get_db()
+    card = conn.execute("SELECT name FROM cards WHERE number = ?", (number,)).fetchone()
+    conn.close()
+
+    if not card:
+        return jsonify({"error": "unknown racer"}), 404
+
+    scans = get_racer_scans_with_laps(number)
+    return jsonify({"number": number, "name": card["name"], "scans": scans})
+
+
+def compute_laps_and_segments():
+    """Walk every card's scans in time order and pull out both completed
+    laps (Gate 1 -> Gate 2 -> Gate 3 -> Gate 1) and the individual
+    segments between consecutive gates. A segment is recorded as soon as
+    its two gates are tapped in order, even before the lap that contains
+    it fully closes. Out-of-sequence scans (stray taps) are skipped."""
+    conn = get_db()
+    cards = conn.execute("SELECT number, name FROM cards").fetchall()
+
+    laps = []
+    segments = []
+
+    for card in cards:
+        number = card["number"]
+        name = card["name"]
+
+        scans = conn.execute(
+            "SELECT gate, scanned_at FROM scans WHERE number = ? ORDER BY scanned_at ASC",
+            (number,),
+        ).fetchall()
+
+        idx = 0
+        t = [None, None, None, None]
+        lap_num = 0
+
+        for s in scans:
+            gate = s["gate"]
+            ts = s["scanned_at"]
+
+            if gate != GATE_SEQUENCE[idx]:
+                continue  # out-of-sequence scan, ignore it
+
+            t[idx] = ts
+
+            if idx > 0:
+                seg_label = SEGMENT_LABELS[idx - 1]
+                seg_start = t[idx - 1]
+                seg_duration = (parse_timestamp(ts) - parse_timestamp(seg_start)).total_seconds()
+                segments.append(
+                    {
+                        "number": number,
+                        "name": name,
+                        "segment": seg_label,
+                        "start": seg_start,
+                        "end": ts,
+                        "duration_seconds": seg_duration,
+                    }
+                )
+
+            if idx == 3:
+                lap_num += 1
+                seg_1_2 = (parse_timestamp(t[1]) - parse_timestamp(t[0])).total_seconds()
+                seg_2_3 = (parse_timestamp(t[2]) - parse_timestamp(t[1])).total_seconds()
+                seg_3_1 = (parse_timestamp(t[3]) - parse_timestamp(t[2])).total_seconds()
+                duration = seg_1_2 + seg_2_3 + seg_3_1
+                laps.append(
+                    {
+                        "number": number,
+                        "name": name,
+                        "lap": lap_num,
+                        "start": t[0],
+                        "end": t[3],
+                        "duration_seconds": duration,
+                    }
+                )
+                t[0] = t[3]
+                t[1] = t[2] = t[3] = None
+                idx = 1
+            else:
+                idx += 1
+
+    conn.close()
+    return laps, segments
+
+
+def compute_laps():
+    laps, _ = compute_laps_and_segments()
+    return laps
+
+
+@app.route("/api/leaderboard", methods=["GET"])
+def leaderboard():
+    laps = compute_laps()
+
+    # Fastest single lap time, one entry per completed lap, fastest first.
+    fastest_laps = sorted(laps, key=lambda l: l["duration_seconds"])
+
+    # Most laps completed, one entry per rider, most laps first.
+    lap_counts = {}
+    for lap in laps:
+        key = lap["number"]
+        if key not in lap_counts:
+            lap_counts[key] = {"number": lap["number"], "name": lap["name"], "lap_count": 0}
+        lap_counts[key]["lap_count"] += 1
+    most_laps = sorted(lap_counts.values(), key=lambda r: r["lap_count"], reverse=True)
+
+    return jsonify({"fastest_laps": fastest_laps, "most_laps": most_laps})
+
+
+@app.route("/api/segments", methods=["GET"])
+def segments_leaderboard():
+    """Fastest 10 times for each of the three gate-to-gate segments."""
+    _, segments = compute_laps_and_segments()
+
+    result = {}
+    for label in SEGMENT_LABELS:
+        matching = [s for s in segments if s["segment"] == label]
+        matching.sort(key=lambda r: r["duration_seconds"])
+
+        # Keep only each racer's fastest split in this segment, so one
+        # racer with several quick splits doesn't crowd others out of
+        # the top 10.
+        seen_numbers = set()
+        deduped = []
+        for seg in matching:
+            if seg["number"] not in seen_numbers:
+                seen_numbers.add(seg["number"])
+                deduped.append(seg)
+
+        result[label] = deduped[:10]
+
+    return jsonify(result)
+
+
+@app.route("/api/teams", methods=["GET"])
+def teams_leaderboard():
+    """Total laps per team, summed across every racer enrolled on that
+    team. Every registered team is included, even ones with zero
+    completed laps so far. Racers with no team set don't contribute."""
+    laps = compute_laps()
+
+    conn = get_db()
+    team_by_number = {row["number"]: row["team"] for row in conn.execute("SELECT number, team FROM cards")}
+    all_team_names = [row["name"] for row in conn.execute("SELECT name FROM teams")]
+    conn.close()
+
+    team_counts = {name: 0 for name in all_team_names}
+    for lap in laps:
+        team = team_by_number.get(lap["number"])
+        if not team:
+            continue
+        team_counts[team] = team_counts.get(team, 0) + 1
+
+    teams = [{"team": t, "lap_count": c} for t, c in team_counts.items()]
+    teams.sort(key=lambda r: r["lap_count"], reverse=True)
+    return jsonify(teams)
+
+
+@app.route("/api/team-list", methods=["GET"])
+def list_team_names():
+    """The registry of team names (for admin management), each with a
+    count of how many racers currently carry that team."""
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT teams.name, COUNT(cards.number) AS rider_count
+        FROM teams
+        LEFT JOIN cards ON cards.team = teams.name
+        GROUP BY teams.name
+        ORDER BY teams.name ASC
+        """
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/team-list", methods=["POST"])
+def add_team_name():
+    data = get_json_body()
+    name = require_team_name_field(data)
+
+    conn = get_db()
+    existing = conn.execute("SELECT name FROM teams WHERE name = ?", (name,)).fetchone()
+    if existing:
+        conn.close()
+        return jsonify({"error": f"Team '{name}' already exists"}), 409
+
+    conn.execute("INSERT INTO teams (name) VALUES (?)", (name,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok", "name": name})
+
+
+@app.route("/api/team-list/<name>", methods=["PUT"])
+def rename_team(name):
+    """Renames a team and cascades the new name onto every racer
+    currently enrolled under the old one."""
+    name = validate_team_name_param(name)
+
+    data = get_json_body()
+    new_name = require_team_name_field(data)
+
+    conn = get_db()
+    existing = conn.execute("SELECT name FROM teams WHERE name = ?", (name,)).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({"error": f"No team named '{name}'"}), 404
+
+    if new_name != name:
+        conflict = conn.execute("SELECT name FROM teams WHERE name = ?", (new_name,)).fetchone()
+        if conflict:
+            conn.close()
+            return jsonify({"error": f"Team '{new_name}' already exists"}), 409
+
+    conn.execute("UPDATE teams SET name = ? WHERE name = ?", (new_name, name))
+    conn.execute("UPDATE cards SET team = ? WHERE team = ?", (new_name, name))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok", "name": new_name})
+
+
+@app.route("/api/team-list/<name>", methods=["DELETE"])
+def delete_team(name):
+    """Deletes a team from the registry and unassigns (does not delete)
+    any racers who were enrolled under it."""
+    name = validate_team_name_param(name)
+
+    conn = get_db()
+    cur = conn.execute("DELETE FROM teams WHERE name = ?", (name,))
+    conn.execute("UPDATE cards SET team = NULL WHERE team = ?", (name,))
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+
+    if deleted == 0:
+        return jsonify({"error": f"No team named '{name}'"}), 404
+    return jsonify({"status": "ok", "name": name})
+
+
+if __name__ == "__main__":
+    # Dev server only. For real checkpoint phones, run this behind your
+    # existing Cloudflare Tunnel / reverse proxy (origin service set to
+    # http://, not https://) so it's served over a trusted HTTPS cert --
+    # Web NFC requires that. Don't expose app.run()'s dev server directly.
+    #
+    # Deliberately no debug mode: with debug on, any unhandled exception
+    # renders the Werkzeug debugger -- an interactive Python console
+    # (remote code execution) if the port is ever reachable -- and the
+    # traceback page dumps this file's source, including the admin
+    # password and DEVICE_TOKEN. Error details go to the console/log
+    # instead, which is all we need.
+    app.run(host="0.0.0.0", port=5000)

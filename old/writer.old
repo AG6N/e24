@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Elysian 24 Card Writer</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 420px; margin: 40px auto; padding: 0 16px; background-color: #89e1d3; }
+  h1 { font-size: 1.3rem; }
+  h2 { font-size: 1.1rem; margin-top: 30px; }
+  label { display: block; margin-top: 16px; font-weight: 600; }
+  input, select {
+    width: 100%; padding: 10px; font-size: 1rem;
+    box-sizing: border-box; margin-top: 4px;
+  }
+  input:disabled, select:disabled { background: #f1f5f9; color: #475569; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+  .checkbox-row input { width: auto; margin-top: 0; }
+  .checkbox-row label { margin-top: 0; font-weight: normal; }
+  .class-row { display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap; }
+  .class-row label { display: inline-flex; align-items: center; gap: 4px; margin-top: 0; font-weight: normal; }
+  .class-row input { width: auto; margin-top: 0; }
+  button {
+    margin-top: 24px; width: 100%; padding: 14px; font-size: 1.1rem;
+    background: #2563eb; color: #fff; border: none; border-radius: 6px;
+  }
+  button:disabled { background: #94a3b8; }
+  #status {
+    margin-top: 20px; padding: 12px; border-radius: 6px;
+    font-size: 0.95rem; white-space: pre-wrap;
+  }
+  #status.ok {
+    background: #22c55e; color: #ffffff;
+    font-size: 1.4rem; font-weight: bold;
+    padding: 24px; text-align: center;
+  }
+  .err { background: #fee2e2; color: #991b1b; }
+  .info { background: #e0e7ff; color: #3730a3; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+  th, td { border: 1px solid #000; padding: 6px 10px; text-align: left; background:#EDDEA4; }
+  th { background: #FF674D; }
+
+
+</style>
+</head>
+<body>
+<center>
+<nav>
+  <a href="../index.html">Home</a> |
+  <a href="index.html">Admin</a> |
+  <a href="reader.html">Reader</a>
+</nav>
+
+
+</center>
+<br>
+<h1>Card Writer</h1>
+
+<label for="name">Name</label>
+<input id="name" type="text" autocomplete="off" placeholder="e.g. Bob">
+
+<label for="number">Number</label>
+<input id="number" type="text" autocomplete="off" inputmode="numeric" disabled>
+
+<label>Class</label>
+<div class="class-row">
+  <label><input type="radio" name="class" value="Road" checked> Road</label>
+  <label><input type="radio" name="class" value="Fixed"> Fixed</label>
+  <label><input type="radio" name="class" value="Mountain"> Mountain</label>
+  <label><input type="radio" name="class" value="Other"> Other</label>
+</div>
+
+<label for="team">Team (optional)</label>
+<select id="team">
+  <option value="">(none)</option>
+</select>
+
+<div class="checkbox-row">
+  <input id="reissue" type="checkbox">
+  <label for="reissue">Reissue an existing number (overwrite a broken/lost card)</label>
+</div>
+
+<button id="writeBtn">Write Card</button>
+
+<div id="status" class="info">Loading next available number...</div>
+
+<h2>Registered Riders</h2>
+<table id="rosterTable">
+  <thead>
+    <tr><th>Number</th><th>Name</th><th>Class</th><th>Team</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<script>
+const statusEl = document.getElementById("status");
+const writeBtn = document.getElementById("writeBtn");
+const nameEl = document.getElementById("name");
+const numberEl = document.getElementById("number");
+const reissueEl = document.getElementById("reissue");
+const teamEl = document.getElementById("team");
+const classRadios = document.querySelectorAll('input[name="class"]');
+const rosterBody = document.querySelector("#rosterTable tbody");
+
+function getSelectedClass() {
+  return document.querySelector('input[name="class"]:checked').value;
+}
+
+// Persistent per-device ID so the admin page can tell writer stations
+// apart, and mark this heartbeat as coming from a writer, not a reader.
+let deviceId = localStorage.getItem("device_id");
+if (!deviceId) {
+  deviceId = (crypto.randomUUID ? crypto.randomUUID() : `dev-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  localStorage.setItem("device_id", deviceId);
+}
+
+function sendHeartbeat() {
+  fetch("/api/heartbeat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      device_id: deviceId,
+      device_type: "writer",
+    }),
+  }).catch(() => {
+    // If the heartbeat fails to send, there's nothing useful to do here --
+    // the admin page will just show this device as offline once enough
+    // time passes, which is the correct outcome.
+  });
+}
+
+sendHeartbeat();
+setInterval(sendHeartbeat, 15000);
+
+let statusResetTimer = null;
+
+function setStatus(msg, cls) {
+  clearTimeout(statusResetTimer);
+  statusEl.textContent = msg;
+  statusEl.className = cls;
+}
+
+async function loadNextNumber() {
+  try {
+    const res = await fetch("/api/next-number");
+    const body = await res.json();
+    numberEl.value = body.number;
+  } catch (err) {
+    setStatus(`Could not fetch next number: ${err.message || err}`, "err");
+  }
+}
+
+async function loadTeamOptions() {
+  try {
+    const res = await fetch("/api/team-list");
+    const teams = await res.json();
+    const previousValue = teamEl.value;
+    teamEl.innerHTML = '<option value="">(none)</option>';
+    teams.forEach((team) => {
+      const opt = document.createElement("option");
+      opt.value = team.name;
+      opt.textContent = team.name;
+      teamEl.appendChild(opt);
+    });
+    // Keep whatever was selected if it's still a valid option after refresh.
+    if ([...teamEl.options].some((o) => o.value === previousValue)) {
+      teamEl.value = previousValue;
+    }
+  } catch (err) {
+    // Non-critical; dropdown just stays at whatever it last had.
+  }
+}
+
+async function loadRoster() {
+  try {
+    const res = await fetch("/api/cards");
+    const cards = await res.json();
+    rosterBody.innerHTML = "";
+    cards.forEach((card) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+<td>${card.number}</td>
+<td>${card.name || ""}</td>
+<td>${card.class || ""}</td>
+<td>${card.team || ""}</td>`;
+      rosterBody.appendChild(tr);
+    });
+  } catch (err) {
+    // Non-critical for the write flow, so just leave the table as-is.
+  }
+}
+
+reissueEl.addEventListener("change", () => {
+  numberEl.disabled = !reissueEl.checked;
+  if (reissueEl.checked) {
+    numberEl.value = "";
+    numberEl.focus();
+    setStatus("Enter the exact number of the card being reissued.", "info");
+  } else {
+    loadNextNumber();
+    setStatus("Enter a name, then tap \"Write Card\" and hold a blank NFC card to the phone.", "info");
+  }
+});
+
+if (!("NDEFReader" in window)) {
+  setStatus("Web NFC is not available here. Open this page in Chrome for Android, over HTTPS, with NFC turned on.", "err");
+  writeBtn.disabled = true;
+} else {
+  loadNextNumber();
+  setStatus("Enter a name, then tap \"Write Card\" and hold a blank NFC card to the phone.", "info");
+}
+
+loadRoster();
+loadTeamOptions();
+setInterval(loadTeamOptions, 20000);
+
+writeBtn.addEventListener("click", async () => {
+  const name = nameEl.value.trim();
+  const number = numberEl.value.trim();
+  const team = teamEl.value.trim();
+  const bikeClass = getSelectedClass();
+  const force = reissueEl.checked;
+
+  if (!name || !number) {
+    setStatus("Both name and number are required.", "err");
+    return;
+  }
+
+  writeBtn.disabled = true;
+  try {
+    setStatus("Registering card with server...", "info");
+    const res = await fetch("/api/cards", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, number, team, class: bikeClass, force }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      throw new Error(body.error || `Server error (${res.status})`);
+    }
+
+    setStatus("Registered. Hold a blank NFC card to the back of the phone now...", "info");
+
+    const ndef = new NDEFReader();
+    await ndef.write({
+      records: [{ recordType: "text", data: number }],
+    });
+
+    setStatus(`Success: card written for ${name} (#${number}).`, "ok");
+
+    // Confirm to the operator, right away, that the racer now shows up
+    // in the database.
+    await loadRoster();
+
+    // Hold the success message for 5 seconds before resetting the form
+    // for the next card.
+    statusResetTimer = setTimeout(async () => {
+      nameEl.value = "";
+      reissueEl.checked = false;
+      numberEl.disabled = true;
+      await loadNextNumber();
+      await loadTeamOptions();
+      setStatus("Enter a name, then tap \"Write Card\" and hold a blank NFC card to the phone.", "info");
+    }, 5000);
+  } catch (err) {
+    setStatus(`Error: ${err.message || err}`, "err");
+  } finally {
+    writeBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leaderboard</title>
+
+<style>
+    body {
+      font-family: sans-serif;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #89e1d3;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+    }
+
+    h2 {
+      font-size: 1.1rem;
+      margin-top: 30px;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      margin-bottom: 20px;
+    }
+
+    nav {
+      display: flex;
+      justify-content: center; /* Center items horizontally */
+      gap: 1em; /* Space between items */
+      margin-top: 40px;
+      padding-bottom: 40px;
+    }
+
+    nav a {
+      flex: 1; /* Equal width for all links */
+      display: flex;
+      justify-content: center; /* Center content horizontally */
+      align-items: center; /* Center content vertically */
+      text-align: center;
+      padding: 0.5em; /* Optional: add padding for spacing */
+    }
+
+   .nav-image {
+      width: 175px;                                      
+      height: 90px;
+      object-fit: contain;
+    }
+
+    
+    table { 
+       border-collapse: collapse; width: 100%; max-width: 600px; 
+    }
+  
+    th, td { 
+       border: 1px solid #000; padding: 6px 10px; text-align: left; background:#EDDEA4; 
+    }
+  
+    th { 
+       background: #FF674D; 
+    }
+
+    @media (max-width: 480px) {
+      #lapsTable, #fastestTable {
+        zoom: 0.7;
+      }
+      #teamsTable {
+        zoom: 0.85;
+      }
+      #classRoadTable, #classFixedTable, #classMountainTable, #classOtherTable {
+        zoom: 0.75;
+      }
+      #seg12Table, #seg23Table, #seg31Table {
+        zoom: 0.75;
+      }
+      #recentTable {
+        zoom: 0.8;
+      }
+      #recentLapsTable {
+        zoom: 0.75;
+      }
+    }
+
+  </style>
+</head>
+<body>
+<img src="/images/e24.png" alt="Elysian 24" style="max-width: 100%; height: auto;">
+
+<nav>
+  <a href="index.html"><img src="/images/home.png" alt="Home" class="nav-image"></a>
+  <a href="riders.html"><img src="/images/r.png" alt="Riders" class="nav-image"></a>
+  <a href="teams.html"><img src="/images/t-1.png" alt="Teams" class="nav-image"></a>
+</nav>
+<!--<img src="/images/lb-1.png" alt="leaderboard" style="max-width: 100%; height: auto;">
+-->
+<h2>Most and Fastest Laps</h2>
+<table id="lapsTable">
+  <thead>
+    <tr><th>#</th><th>Number</th><th>Name</th><th>Class</th><th>Team</th><th>Laps</th><th>Fastest Lap</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Fastest Laps, ever</h2>
+<table id="fastestTable">
+  <thead>
+    <tr><th>#</th><th>Number</th><th>Name</th><th>Class</th><th>Team</th><th>Lap</th><th>Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Teams with the most laps, + fastest lap</h2>
+<table id="teamsTable">
+  <thead>
+    <tr><th>#</th><th>Team</th><th>Total Laps</th><th>Fastest Lap</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Fastest — Road</h2>
+<table id="classRoadTable">
+  <thead>
+    <tr><th>#</th><th>Number</th><th>Name</th><th>Team</th><th>Lap</th><th>Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Fastest — Fixed</h2>
+<table id="classFixedTable">
+  <thead>
+    <tr><th>#</th><th>Number</th><th>Name</th><th>Team</th><th>Lap</th><th>Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Fastest — Mountain</h2>
+<table id="classMountainTable">
+  <thead>
+    <tr><th>#</th><th>Number</th><th>Name</th><th>Team</th><th>Lap</th><th>Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Fastest — Other</h2>
+<table id="classOtherTable">
+  <thead>
+    <tr><th>#</th><th>Number</th><th>Name</th><th>Team</th><th>Lap</th><th>Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Segment: Gate 1 → Gate 2</h2>
+<table id="seg12Table">
+  <thead>
+    <tr><th>#</th><th>Number</th><th>Name</th><th>Class</th><th>Team</th><th>Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Segment: Gate 2 → Gate 3</h2>
+<table id="seg23Table">
+  <thead>
+    <tr><th>#</th><th>Number</th><th>Name</th><th>Class</th><th>Team</th><th>Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Segment: Gate 3 → Gate 1</h2>
+<table id="seg31Table">
+  <thead>
+    <tr><th>#</th><th>Number</th><th>Name</th><th>Class</th><th>Team</th><th>Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Last 5 Completed Laps</h2>
+<table id="recentLapsTable">
+  <thead>
+    <tr><th>Number</th><th>Name</th><th>Class</th><th>Team</th><th>Lap</th><th>Lap Time</th><th>Completed</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Last 5 Scans</h2>
+<table id="recentTable">
+  <thead>
+    <tr><th>Number</th><th>Name</th><th>Team</th><th>Gate</th><th>Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<div id="updated"></div>
+
+<script>
+function formatDuration(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = (seconds % 60).toFixed(1);
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+// Keeps only the first (fastest) entry per racer number, so one racer
+// with several quick times doesn't crowd other racers out of a table.
+// Assumes the input is already sorted fastest-first.
+function dedupeByRacer(entries) {
+  const seen = new Set();
+  const result = [];
+  entries.forEach((entry) => {
+    if (!seen.has(entry.number)) {
+      seen.add(entry.number);
+      result.push(entry);
+    }
+  });
+  return result;
+}
+
+async function refresh() {
+  try {
+    const [leaderboardRes, cardsRes, teamsRes, segmentsRes, scansRes] = await Promise.all([
+      fetch("/api/leaderboard"),
+      fetch("/api/cards"),
+      fetch("/api/teams"),
+      fetch("/api/segments"),
+      fetch("/api/scans"),
+    ]);
+    const data = await leaderboardRes.json();
+    const cards = await cardsRes.json();
+    const teams = await teamsRes.json();
+    const segments = await segmentsRes.json();
+    const scans = await scansRes.json();
+
+    const teamByNumber = {};
+    const classByNumber = {};
+    cards.forEach((card) => {
+      teamByNumber[card.number] = card.team || "";
+      classByNumber[card.number] = card.class || "";
+    });
+
+    // data.fastest_laps is already sorted fastest-first, so the first
+    // lap seen for a rider/team is that rider's/team's fastest.
+    const fastestByNumber = {};
+    const fastestByTeam = {};
+    data.fastest_laps.forEach((lap) => {
+      if (!(lap.number in fastestByNumber)) {
+        fastestByNumber[lap.number] = lap.duration_seconds;
+      }
+      const team = teamByNumber[lap.number];
+      if (team && !(team in fastestByTeam)) {
+        fastestByTeam[team] = lap.duration_seconds;
+      }
+    });
+
+    const lapsBody = document.querySelector("#lapsTable tbody");
+    lapsBody.innerHTML = "";
+    const sortedRiders = [...data.most_laps].sort((a, b) => {
+      if (b.lap_count !== a.lap_count) return b.lap_count - a.lap_count;
+      const aFastest = a.number in fastestByNumber ? fastestByNumber[a.number] : Infinity;
+      const bFastest = b.number in fastestByNumber ? fastestByNumber[b.number] : Infinity;
+      return aFastest - bFastest;
+    });
+    sortedRiders.slice(0, 10).forEach((rider, i) => {
+      const tr = document.createElement("tr");
+      const fastest = rider.number in fastestByNumber ? formatDuration(fastestByNumber[rider.number]) : "-";
+      tr.innerHTML = `
+	<td>${i + 1}</td>
+	<td>${rider.number}</td>
+	<td>${rider.name || ""}</td>
+	<td>${classByNumber[rider.number] || ""}</td>
+	<td>${teamByNumber[rider.number] || ""}</td>
+	<td>${rider.lap_count}</td>
+	<td>${fastest}</td>`;
+      lapsBody.appendChild(tr);
+    });
+
+    const fastestBody = document.querySelector("#fastestTable tbody");
+    fastestBody.innerHTML = "";
+    dedupeByRacer(data.fastest_laps).slice(0, 10).forEach((lap, i) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${i + 1}</td><td>${lap.number}</td><td>${lap.name || ""}</td><td>${classByNumber[lap.number] || ""}</td><td>${teamByNumber[lap.number] || ""}</td><td>${lap.lap}</td><td>${formatDuration(lap.duration_seconds)}</td>`;
+      fastestBody.appendChild(tr);
+    });
+
+    const teamsBody = document.querySelector("#teamsTable tbody");
+    teamsBody.innerHTML = "";
+    const sortedTeams = [...teams].sort((a, b) => {
+      if (b.lap_count !== a.lap_count) return b.lap_count - a.lap_count;
+      const aFastest = a.team in fastestByTeam ? fastestByTeam[a.team] : Infinity;
+      const bFastest = b.team in fastestByTeam ? fastestByTeam[b.team] : Infinity;
+      return aFastest - bFastest;
+    });
+    sortedTeams.slice(0, 10).forEach((team, i) => {
+      const tr = document.createElement("tr");
+      const fastest = team.team in fastestByTeam ? formatDuration(fastestByTeam[team.team]) : "-";
+      tr.innerHTML = `<td>${i + 1}</td><td>${team.team}</td><td>${team.lap_count}</td><td>${fastest}</td>`;
+      teamsBody.appendChild(tr);
+    });
+
+    const classTables = { "Road": "#classRoadTable", "Fixed": "#classFixedTable", "Mountain": "#classMountainTable", "Other": "#classOtherTable" };
+    Object.entries(classTables).forEach(([className, selector]) => {
+      const body = document.querySelector(`${selector} tbody`);
+      body.innerHTML = "";
+      dedupeByRacer(data.fastest_laps.filter((lap) => classByNumber[lap.number] === className))
+        .slice(0, 10)
+        .forEach((lap, i) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${i + 1}</td><td>${lap.number}</td><td>${lap.name || ""}</td><td>${teamByNumber[lap.number] || ""}</td><td>${lap.lap}</td><td>${formatDuration(lap.duration_seconds)}</td>`;
+          body.appendChild(tr);
+        });
+    });
+
+    const segmentTables = { "1-2": "#seg12Table", "2-3": "#seg23Table", "3-1": "#seg31Table" };
+    Object.entries(segmentTables).forEach(([label, selector]) => {
+      const body = document.querySelector(`${selector} tbody`);
+      body.innerHTML = "";
+      dedupeByRacer(segments[label] || []).forEach((seg, i) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${i + 1}</td><td>${seg.number}</td><td>${seg.name || ""}</td><td>${classByNumber[seg.number] || ""}</td><td>${teamByNumber[seg.number] || ""}</td><td>${formatDuration(seg.duration_seconds)}</td>`;
+        body.appendChild(tr);
+      });
+    });
+
+    const recentLapsBody = document.querySelector("#recentLapsTable tbody");
+    recentLapsBody.innerHTML = "";
+    const recentLaps = [...data.fastest_laps].sort((a, b) => new Date(b.end) - new Date(a.end));
+    recentLaps.slice(0, 5).forEach((lap) => {
+      const tr = document.createElement("tr");
+      const completedAt = new Date(lap.end).toLocaleTimeString();
+      tr.innerHTML = `<td>${lap.number}</td><td>${lap.name || ""}</td><td>${classByNumber[lap.number] || ""}</td><td>${teamByNumber[lap.number] || ""}</td><td>${lap.lap}</td><td>${formatDuration(lap.duration_seconds)}</td><td>${completedAt}</td>`;
+      recentLapsBody.appendChild(tr);
+    });
+
+    const recentBody = document.querySelector("#recentTable tbody");
+    recentBody.innerHTML = "";
+    scans.slice(0, 5).forEach((scan) => {
+      const tr = document.createElement("tr");
+      const time = new Date(scan.scanned_at).toLocaleTimeString();
+      tr.innerHTML = `<td>${scan.number}</td><td>${scan.name || ""}</td><td>${teamByNumber[scan.number] || ""}</td><td>${scan.gate}</td><td>${time}</td>`;
+      recentBody.appendChild(tr);
+    });
+
+    document.getElementById("updated").textContent =
+      "Last updated: " + new Date().toLocaleTimeString();
+  } catch (err) {
+    document.getElementById("updated").textContent = "Error loading leaderboard: " + err.message;
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Elysian 24 Checkpoint</title>
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    overscroll-behavior: none;
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: manipulation;
+    background-color: #89e1d3;
+  }
+  body {
+    font-family: system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    box-sizing: border-box;
+  }
+  h1 { font-size: 1.2rem; margin: 0 0 8px 0; }
+  .setup-row { display: flex; gap: 10px; align-items: center; }
+  select {
+    flex: 1;
+    padding: 12px;
+    font-size: 1.1rem;
+  }
+  button {
+    padding: 14px;
+    font-size: 1.1rem;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+  }
+  button:disabled { background: #94a3b8; }
+  #startBtn { margin-top: 10px; width: 100%; }
+
+  #dialog {
+    flex: 1;
+    margin-top: 20px;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 2rem;
+    font-weight: bold;
+    padding: 20px;
+    box-sizing: border-box;
+    background: #e2e8f0;
+    color: #334155;
+  }
+  #dialog.scanned {
+    background: #22c55e;
+    color: #ffffff;
+  }
+  #dialog.duplicate {
+    background: #fef08a;
+    color: #713f12;
+  }
+  #dialog.error {
+    background: #ef4444;
+    color: #ffffff;
+  }
+  #sub { display: block; font-size: 1.8rem; font-weight: bold; margin-top: 16px; }
+
+  #log { margin-top: 16px; font-size: 0.8rem; color: #64748b; max-height: 90px; overflow-y: auto; }
+  #log div { padding: 3px 0; }
+</style>
+</head>
+<body>
+
+<h1>Elysian 24 Checkpoint</h1>
+
+<div class="setup-row">
+  <select id="gate">
+    <option value="1">Gate 1</option>
+    <option value="2">Gate 2</option>
+    <option value="3">Gate 3</option>
+  </select>
+</div>
+<button id="startBtn">Start Scanning</button>
+
+<div id="dialog">Select a gate and tap Start Scanning</div>
+
+<div id="log"></div>
+
+<script>
+const dialogEl = document.getElementById("dialog");
+const startBtn = document.getElementById("startBtn");
+const gateEl = document.getElementById("gate");
+const logEl = document.getElementById("log");
+
+const savedGate = localStorage.getItem("checkpoint_gate");
+if (savedGate) gateEl.value = savedGate;
+gateEl.addEventListener("change", () => {
+  localStorage.setItem("checkpoint_gate", gateEl.value);
+});
+
+// Persistent per-device ID so the admin page can tell devices apart
+// even if two of them are set to the same gate.
+let deviceId = localStorage.getItem("device_id");
+if (!deviceId) {
+  deviceId = (crypto.randomUUID ? crypto.randomUUID() : `dev-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  localStorage.setItem("device_id", deviceId);
+}
+
+let isScanning = false;
+
+// Shared secret for field kiosk writes (record scan, heartbeat). This
+// must match the server's DEVICE_TOKEN env var. It's visible to anyone
+// with access to this page's source, which is fine -- it's a deterrent
+// against outside requests hitting the API directly, not a defense
+// against someone who already has physical access to this kiosk. Rotate
+// it (and update this file) if a kiosk phone is lost or compromised.
+const DEVICE_TOKEN = "Kt2en0X0GracCJ4hfdcAO4Dh0ZDOuKeV";
+
+function sendHeartbeat() {
+  fetch("/api/heartbeat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Device-Token": DEVICE_TOKEN },
+    body: JSON.stringify({
+      device_id: deviceId,
+      gate: gateEl.value,
+      scanning: isScanning,
+    }),
+  }).catch(() => {
+    // If the heartbeat itself fails to send, there's nothing useful to
+    // do here -- the admin page will just show this device as offline
+    // once enough time passes, which is the correct outcome.
+  });
+}
+
+sendHeartbeat();
+setInterval(sendHeartbeat, 15000);
+
+let resetTimer = null;
+
+function showDialog(mainText, subText, cls) {
+  clearTimeout(resetTimer);
+  dialogEl.className = cls;
+  dialogEl.innerHTML = subText
+    ? `<div id="main">${mainText}</div><span id="sub">${subText}</span>`
+    : `<div id="main">${mainText}</div>`;
+
+  // Return to a neutral "ready" state a couple seconds after a scan so
+  // the kiosk is clearly waiting for the next card, not stuck showing
+  // the last result.
+  resetTimer = setTimeout(() => {
+    dialogEl.className = "";
+    dialogEl.textContent = `Ready — Gate ${gateEl.value}`;
+  }, 3000);
+}
+
+function addLogEntry(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  logEl.prepend(div);
+  while (logEl.children.length > 20) logEl.removeChild(logEl.lastChild);
+}
+
+if (!("NDEFReader" in window)) {
+  dialogEl.className = "error";
+  dialogEl.textContent = "Web NFC not available. Use Chrome for Android over HTTPS with NFC on.";
+  startBtn.disabled = true;
+}
+
+startBtn.addEventListener("click", async () => {
+  try {
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+
+    const ndef = new NDEFReader();
+    await ndef.scan();
+
+    startBtn.disabled = true;
+    gateEl.disabled = true;
+    dialogEl.className = "";
+    dialogEl.textContent = `Ready — Gate ${gateEl.value}`;
+
+    isScanning = true;
+    sendHeartbeat();
+
+    ndef.onreading = async (event) => {
+      const record = event.message.records[0];
+      if (!record) return;
+
+      const decoder = new TextDecoder(record.encoding || "utf-8");
+      const number = decoder.decode(record.data).trim();
+      const gate = gateEl.value;
+
+      try {
+        const res = await fetch("/api/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Device-Token": DEVICE_TOKEN },
+          body: JSON.stringify({ number, gate }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `Server error (${res.status})`);
+
+        const who = body.name || `#${number}`;
+
+        if (body.status === "duplicate") {
+          showDialog("ALREADY SCANNED", `${who} — Gate ${gate}`, "duplicate");
+          addLogEntry(`${new Date().toLocaleTimeString()} — duplicate ignored: ${who} @ Gate ${gate}`);
+        } else {
+          showDialog("CARD SCANNED", `${who} — Gate ${gate}`, "scanned");
+          addLogEntry(`${new Date(body.scanned_at).toLocaleTimeString()} — ${who} @ Gate ${gate}`);
+        }
+      } catch (err) {
+        showDialog("ERROR", err.message || String(err), "error");
+        addLogEntry(`ERROR for #${number}: ${err.message || err}`);
+      }
+    };
+
+    ndef.onreadingerror = () => {
+      showDialog("READ ERROR", "Try tapping the card again", "error");
+    };
+  } catch (err) {
+    dialogEl.className = "error";
+    dialogEl.textContent = `Could not start scan: ${err.message || err}`;
+  }
+});
+</script>
+</body>
+</html>

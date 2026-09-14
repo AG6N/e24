@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Elysian 24</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #89e1d3;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+    }
+
+    h2 {
+      font-size: 1.1rem;
+      margin-top: 30px;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      margin-bottom: 20px;
+    }
+
+    nav {
+      display: flex;
+      justify-content: center; /* Center items horizontally */
+      gap: 1em; /* Space between items */
+      margin-top: 10px;
+    }
+
+    nav a {
+      flex: 1; /* Equal width for all links */
+      display: flex;
+      justify-content: center; /* Center content horizontally */
+      align-items: center; /* Center content vertically */
+      text-align: center;
+      padding: 0.5em; /* Optional: add padding for spacing */
+    }
+
+    .nav-image {
+      max-width: 100%; /* Ensure image fits its container */
+      height: auto;
+    }
+
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+  </style>
+</head>
+<body>
+
+  <h1 class="visually-hidden">Elysian 24</h1>
+
+  <img src="/images/e24.png" alt="Elysian 24">
+
+  <nav>
+    <a href="leaderboard.html"><img src="/images/lb-1.png" alt="Leaderboard" class="nav-image"></a>
+    <a href="racers.html">Racers</a>
+    <a href="teams.html">Teams</a>
+    <a href="/admin/index.html"><img src="/images/admin.png" alt="Admin" class="nav-image"></a>
+  </nav>
+
+  <main style="margin-top: 100px;">
+    Bla bla bla, stuff goes in here.
+  </main>
+
+</body>
+</html>

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rider Detail</title>
+
+<style>
+  body { font-family: sans-serif; margin: 20px; background-color: #89e1d3; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 30px; }
+  table { border-collapse: collapse; width: 100%; max-width: 500px; }
+  th, td { border: 1px solid #000; padding: 6px 10px; text-align: left; background:#EDDEA4; }
+  th { background: #FF674D; }
+  #updated { font-size: 0.85rem; color: #555; margin-top: 20px; }
+</style>
+</head>
+<body>
+<center>
+<img src="/images/e24.png" alt="Elysian 24" style="max-width: 100%; height: auto;">
+<nav>
+  <a href="index.html"><img src="/images/home.png" alt="Home" style="max-width: 7%; height: auto;"></a>
+  <a href="leaderboard.html"><img src="/images/lb-1.png" alt="Leaderboard" style="max-width: 15%; height: auto;"></a>
+  <a href="teams.html"><img src="/images/t-1.png" alt="Teams" style="max-width: 12%; height: auto;"></a>
+  <a href="admin.html"><img src="/images/admin.png" alt="Admin" style="max-width: 15%; height: auto;"></a>
+
+</nav>
+<br>
+<br>
+
+
+<h1>Rider Detail</h1>
+
+<label for="racer">Rider</label>
+<select id="racer">
+  <option value="">-- select a rider --</option>
+</select>
+
+<div class="sort-row">
+  <label><input type="radio" name="sort" value="sequential" checked> Sequential order (as recorded)</label>
+  <label><input type="radio" name="sort" value="fastest"> Fastest lap time</label>
+</div>
+
+<div id="summary"></div>
+<div id="empty"></div>
+
+<table id="scanTable" style="display:none">
+  <thead>
+    <tr><th>Lap</th><th>Gate</th><th>Time</th><th>Lap Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>All Registered Riders</h2>
+<table id="rostersTable">
+  <thead>
+    <tr><th>Number</th>
+    <th>Name</th>
+    <th>Class</th>
+    <th>Team</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<script>
+const racerEl = document.getElementById("racer");
+const summaryEl = document.getElementById("summary");
+const emptyEl = document.getElementById("empty");
+const tableEl = document.getElementById("scanTable");
+const tbodyEl = tableEl.querySelector("tbody");
+const sortRadios = document.querySelectorAll('input[name="sort"]');
+
+let currentScans = [];
+
+function formatDuration(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = (seconds % 60).toFixed(1);
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+async function loadRacers() {
+  const res = await fetch("/api/cards");
+  const cards = await res.json();
+
+  racerEl.innerHTML = '<option value="">-- select a rider --</option>';
+  cards.forEach((card) => {
+    const opt = document.createElement("option");
+    opt.value = card.number;
+    opt.textContent = `${card.name} (#${card.number})`;
+    racerEl.appendChild(opt);
+  });
+
+  const rostersBody = document.querySelector("#rostersTable tbody");
+  rostersBody.innerHTML = "";
+  cards.forEach((card) => {
+    const tr = document.createElement("tr");
+    tr.style.cursor = "pointer";
+    tr.innerHTML = `
+<td>${card.number}</td>
+<td>${card.name || ""}</td>
+<td>${card.class || ""}</td>
+<td>${card.team || ""}</td>`;
+    tr.addEventListener("click", () => {
+      racerEl.value = card.number;
+      loadRacerDetail(card.number);
+    });
+    rostersBody.appendChild(tr);
+  });
+}
+
+async function loadRacerDetail(number) {
+  if (!number) {
+    currentScans = [];
+    render();
+    return;
+  }
+  const res = await fetch(`/api/racer/${encodeURIComponent(number)}`);
+  const data = await res.json();
+  if (!res.ok) {
+    summaryEl.textContent = data.error || "Error loading racer";
+    currentScans = [];
+    render();
+    return;
+  }
+  currentScans = data.scans;
+  const lapCount = new Set(currentScans.filter(s => s.duration_seconds !== null).map(s => s.lap)).size;
+  summaryEl.textContent = `${data.name} (#${data.number}) — ${currentScans.length} scan(s), ${lapCount} completed lap(s)`;
+  render();
+}
+
+function getSortMode() {
+  return document.querySelector('input[name="sort"]:checked').value;
+}
+
+function render() {
+  tbodyEl.innerHTML = "";
+
+  if (currentScans.length === 0) {
+    tableEl.style.display = "none";
+    emptyEl.textContent = racerEl.value ? "No scans recorded for this racer yet." : "";
+    return;
+  }
+  emptyEl.textContent = "";
+  tableEl.style.display = "";
+
+  let rows = [...currentScans];
+
+  if (getSortMode() === "fastest") {
+    // Completed laps sorted fastest-first, then any leftover/incomplete
+    // scans afterward in the order they were recorded.
+    const withDuration = rows.filter(r => r.duration_seconds !== null)
+                              .sort((a, b) => a.duration_seconds - b.duration_seconds);
+    const withoutDuration = rows.filter(r => r.duration_seconds === null);
+    rows = [...withDuration, ...withoutDuration];
+  }
+  // "sequential" is already in recorded order from the API.
+
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    const time = new Date(row.scanned_at).toLocaleTimeString();
+    const lapLabel = row.lap !== null ? row.lap : "-";
+    const lapTime = row.duration_seconds !== null ? formatDuration(row.duration_seconds) : "-";
+    tr.innerHTML = `<td>${lapLabel}</td><td>${row.gate}</td><td>${time}</td><td>${lapTime}</td>`;
+    tbodyEl.appendChild(tr);
+  });
+}
+
+racerEl.addEventListener("change", () => loadRacerDetail(racerEl.value));
+sortRadios.forEach(r => r.addEventListener("change", render));
+
+loadRacers();
+</script>
+</body>
+</html>

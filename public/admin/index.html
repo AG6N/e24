@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; max-width: 900px; background-color: #89e1d3; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 36px; }
+  nav a { margin-right: 12px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #000; padding: 6px 10px; text-align: left; background:#EDDEA4; }
+  th { background: #FF674D; }
+  input, select { padding: 4px; font-size: 0.9rem; box-sizing: border-box; }
+  input[type="text"] { width: 100%; }
+  td input[type="text"] { min-width: 90px; }
+  .status-online { color: #166534; font-weight: bold; }
+  .status-offline { color: #991b1b; font-weight: bold; }
+  .btn { padding: 5px 10px; font-size: 0.85rem; cursor: pointer; border: none; border-radius: 4px; }
+  .btn-save { background: #2563eb; color: #fff; }
+  .btn-delete { background: #ef4444; color: #fff; }
+  .btn-add { background: #16a34a; color: #fff; margin-top: 8px; }
+  .add-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .add-row input, .add-row select { flex: 1; min-width: 100px; }
+  #updated { font-size: 0.85rem; color: #555; margin-top: 20px; }
+  .msg { font-size: 0.85rem; margin-top: 6px; }
+  .msg.err { color: #991b1b; }
+  .msg.ok { color: #166534; }
+  .hint { font-size: 0.8rem; color: #666; margin-top: 4px; }
+</style>
+</head>
+<body>
+<img src="/images/admin.png" alt="Admin" style="max-width: 100%; height: auto;">
+<nav>
+  <a href="../index.html">Home</a> |
+  <a href="/admin/writer.html">Writer</a> |
+  <a href="/admin/reader.html">Reader</a>
+</nav>
+
+<h2>Checkpoint Devices</h2>
+<table id="devicesTable">
+  <thead>
+    <tr><th>Gate</th><th>Device ID</th><th>Scanning</th><th>Last Seen</th><th>Status</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<p id="noDevices" style="display:none; color:#666;">No checkpoint devices have checked in yet.</p>
+
+<h2>Card Writer Devices</h2>
+<table id="writerDevicesTable">
+  <thead>
+    <tr><th>Device ID</th><th>Last Seen</th><th>Status</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<p id="noWriterDevices" style="display:none; color:#666;">No card writer devices have checked in yet.</p>
+
+<h2>Last 5 Scans</h2>
+<table id="recentTable">
+  <thead>
+    <tr><th>Number</th><th>Name</th><th>Team</th><th>Gate</th><th>Time</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Manage Riders</h2>
+<div class="add-row">
+  <input id="racerFilter" type="text" placeholder="Filter by number, name, team, or class">
+</div>
+<table id="racersTable">
+  <thead>
+    <tr><th>Number</th><th>Name</th><th>Team</th><th>Class</th><th></th><th></th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<div id="racersMsg" class="msg"></div>
+
+<h2>Manage Teams</h2>
+<table id="teamsTable">
+  <thead>
+    <tr><th>Team Name</th><th>Riders</th><th></th><th></th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<div class="add-row">
+  <input id="newTeamName" type="text" placeholder="New team name">
+  <button class="btn btn-add" id="addTeamBtn">Add Team</button>
+</div>
+<div id="teamsMsg" class="msg"></div>
+
+<h2>Manage Scans</h2>
+<p class="hint">Timestamps are ISO 8601 in UTC, e.g. 2026-08-02T14:05:00+00:00. Showing the 50 most recent scans.</p>
+<div class="add-row">
+  <input id="newScanNumber" type="text" placeholder="Rider number">
+  <select id="newScanGate">
+    <option value="1">Gate 1</option>
+    <option value="2">Gate 2</option>
+    <option value="3">Gate 3</option>
+  </select>
+  <input id="newScanTime" type="text" placeholder="Timestamp (blank = now)">
+  <button class="btn btn-add" id="addScanBtn">Add Scan</button>
+</div>
+<div id="scansMsg" class="msg"></div>
+<div class="add-row">
+  <input id="scanFilterNumber" type="text" placeholder="Filter by rider number">
+  <select id="scanFilterGate">
+    <option value="">All gates</option>
+    <option value="1">Gate 1</option>
+    <option value="2">Gate 2</option>
+    <option value="3">Gate 3</option>
+  </select>
+</div>
+<table id="scansTable">
+  <thead>
+    <tr><th>Number</th><th>Gate</th><th>Timestamp</th><th></th><th></th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>API Explorer</h2>
+<p class="hint">View raw JSON from any read-only endpoint without leaving the browser.</p>
+<div class="add-row">
+  <select id="apiEndpointSelect">
+    <option value="/api/cards">/api/cards</option>
+    <option value="/api/scans">/api/scans</option>
+    <option value="/api/leaderboard">/api/leaderboard</option>
+    <option value="/api/segments">/api/segments</option>
+    <option value="/api/teams">/api/teams</option>
+    <option value="/api/team-list">/api/team-list</option>
+    <option value="/api/devices">/api/devices</option>
+    <option value="/api/next-number">/api/next-number</option>
+    <option value="/api/racer/">/api/racer/&lt;number&gt;</option>
+  </select>
+  <input id="apiRacerNumber" type="text" placeholder="Rider number" style="display:none; flex:0 0 120px;">
+  <button class="btn btn-add" id="apiFetchBtn">Fetch</button>
+</div>
+<div id="apiMsg" class="msg"></div>
+<pre id="apiOutput" style="background:#a8f8f8; border:1px solid #ccc; padding:10px; margin-top:10px; overflow:auto; max-height:400px; white-space:pre-wrap; word-break:break-word; font-size:0.85rem;"></pre>
+
+<div id="updated"></div>
+
+<script>
+// ---- read-only auto-refreshing sections (devices, last 5 scans) ----
+
+const OFFLINE_THRESHOLD_SECONDS = 45;
+
+function secondsAgo(isoTimestamp) {
+  return (Date.now() - new Date(isoTimestamp).getTime()) / 1000;
+}
+
+let teamByNumberCache = {};
+
+async function refreshReadOnly() {
+  try {
+    const [devicesRes, scansRes, cardsRes] = await Promise.all([
+      fetch("/api/devices"),
+      fetch("/api/scans"),
+      fetch("/api/cards"),
+    ]);
+    const devices = await devicesRes.json();
+    const scans = await scansRes.json();
+    const cards = await cardsRes.json();
+
+    teamByNumberCache = {};
+    cards.forEach((c) => { teamByNumberCache[c.number] = c.team || ""; });
+
+    const readerDevices = devices.filter((d) => d.device_type !== "writer");
+    const writerDevices = devices.filter((d) => d.device_type === "writer");
+
+    const devicesBody = document.querySelector("#devicesTable tbody");
+    devicesBody.innerHTML = "";
+    document.getElementById("noDevices").style.display = readerDevices.length ? "none" : "block";
+
+    readerDevices.forEach((d) => {
+      const age = secondsAgo(d.last_seen);
+      const online = age <= OFFLINE_THRESHOLD_SECONDS;
+      const tr = document.createElement("tr");
+      const shortId = d.device_id.length > 12 ? d.device_id.slice(0, 8) + "…" : d.device_id;
+      const lastSeenText = new Date(d.last_seen).toLocaleTimeString() + ` (${Math.round(age)}s ago)`;
+      tr.innerHTML = `
+        <td>${d.gate || "-"}</td>
+        <td title="${d.device_id}">${shortId}</td>
+        <td>${d.scanning ? "Yes" : "No"}</td>
+        <td>${lastSeenText}</td>
+        <td class="${online ? 'status-online' : 'status-offline'}">${online ? "Online" : "OFFLINE"}</td>
+      `;
+      devicesBody.appendChild(tr);
+    });
+
+    const writerDevicesBody = document.querySelector("#writerDevicesTable tbody");
+    writerDevicesBody.innerHTML = "";
+    document.getElementById("noWriterDevices").style.display = writerDevices.length ? "none" : "block";
+
+    writerDevices.forEach((d) => {
+      const age = secondsAgo(d.last_seen);
+      const online = age <= OFFLINE_THRESHOLD_SECONDS;
+      const tr = document.createElement("tr");
+      const shortId = d.device_id.length > 12 ? d.device_id.slice(0, 8) + "…" : d.device_id;
+      const lastSeenText = new Date(d.last_seen).toLocaleTimeString() + ` (${Math.round(age)}s ago)`;
+      tr.innerHTML = `
+        <td title="${d.device_id}">${shortId}</td>
+        <td>${lastSeenText}</td>
+        <td class="${online ? 'status-online' : 'status-offline'}">${online ? "Online" : "OFFLINE"}</td>
+      `;
+      writerDevicesBody.appendChild(tr);
+    });
+
+    const recentBody = document.querySelector("#recentTable tbody");
+    recentBody.innerHTML = "";
+    scans.slice(0, 5).forEach((scan) => {
+      const tr = document.createElement("tr");
+      const time = new Date(scan.scanned_at).toLocaleTimeString();
+      tr.innerHTML = `<td>${scan.number}</td><td>${scan.name || ""}</td><td>${teamByNumberCache[scan.number] || ""}</td><td>${scan.gate}</td><td>${time}</td>`;
+      recentBody.appendChild(tr);
+    });
+
+    document.getElementById("updated").textContent =
+      "Last updated: " + new Date().toLocaleTimeString();
+  } catch (err) {
+    document.getElementById("updated").textContent = "Error loading admin data: " + err.message;
+  }
+}
+
+refreshReadOnly();
+setInterval(refreshReadOnly, 5000);
+
+// ---- Manage Racers ----
+// Editable tables are NOT on the auto-refresh timer -- reloading them
+// mid-edit would wipe out whatever the operator is typing. They load
+// once on page open and reload only after a save/delete completes.
+
+function showMsg(elId, text, cls) {
+  const el = document.getElementById(elId);
+  el.textContent = text;
+  el.className = "msg " + cls;
+}
+
+let teamListCache = [];
+
+async function loadTeamListCache() {
+  const res = await fetch("/api/team-list");
+  teamListCache = await res.json();
+}
+
+function teamSelectHtml(selected) {
+  let html = `<option value="">(none)</option>`;
+  teamListCache.forEach((t) => {
+    const sel = t.name === selected ? "selected" : "";
+    html += `<option value="${t.name}" ${sel}>${t.name}</option>`;
+  });
+  return html;
+}
+
+const BIKE_CLASSES = ["Road", "Fixed", "Mountain", "Other"];
+
+function classSelectHtml(selected) {
+  return BIKE_CLASSES.map((c) => {
+    const sel = c === selected ? "selected" : "";
+    return `<option value="${c}" ${sel}>${c}</option>`;
+  }).join("");
+}
+
+async function loadRacersAdmin() {
+  await loadTeamListCache();
+  const res = await fetch("/api/cards");
+  const cards = await res.json();
+  const body = document.querySelector("#racersTable tbody");
+  body.innerHTML = "";
+
+  cards.forEach((card) => {
+    const tr = document.createElement("tr");
+    tr.dataset.number = card.number;
+    tr.dataset.name = (card.name || "").toLowerCase();
+    tr.dataset.team = (card.team || "").toLowerCase();
+    tr.dataset.class = (card.class || "").toLowerCase();
+    tr.innerHTML = `
+      <td><input type="text" class="r-number" value="${card.number}"></td>
+      <td><input type="text" class="r-name" value="${card.name || ""}"></td>
+      <td><select class="r-team">${teamSelectHtml(card.team)}</select></td>
+      <td><select class="r-class">${classSelectHtml(card.class)}</select></td>
+      <td><button class="btn btn-save">Save</button></td>
+      <td><button class="btn btn-delete">Delete</button></td>
+    `;
+    tr.querySelector(".btn-save").addEventListener("click", () => saveRacer(card.number, tr));
+    tr.querySelector(".btn-delete").addEventListener("click", () => deleteRacer(card.number));
+    body.appendChild(tr);
+  });
+
+  applyRacerFilter();
+}
+
+function applyRacerFilter() {
+  const term = document.getElementById("racerFilter").value.trim().toLowerCase();
+  document.querySelectorAll("#racersTable tbody tr").forEach((tr) => {
+    const matches = !term
+      || tr.dataset.number.toLowerCase().includes(term)
+      || tr.dataset.name.includes(term)
+      || tr.dataset.team.includes(term)
+      || tr.dataset.class.includes(term);
+    tr.style.display = matches ? "" : "none";
+  });
+}
+
+document.getElementById("racerFilter").addEventListener("input", applyRacerFilter);
+
+async function saveRacer(originalNumber, row) {
+  const number = row.querySelector(".r-number").value.trim();
+  const name = row.querySelector(".r-name").value.trim();
+  const team = row.querySelector(".r-team").value;
+  const bikeClass = row.querySelector(".r-class").value;
+
+  try {
+    const res = await fetch(`/api/cards/${encodeURIComponent(originalNumber)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number, name, team, class: bikeClass }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server error (${res.status})`);
+    showMsg("racersMsg", `Saved #${number} (${name}).`, "ok");
+    await loadRacersAdmin();
+    await refreshReadOnly();
+  } catch (err) {
+    showMsg("racersMsg", `Error: ${err.message || err}`, "err");
+  }
+}
+
+async function deleteRacer(number) {
+  if (!confirm(`Delete racer #${number}? This also deletes all of their recorded scans. This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`/api/cards/${encodeURIComponent(number)}`, { method: "DELETE" });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server error (${res.status})`);
+    showMsg("racersMsg", `Deleted racer #${number}.`, "ok");
+    await loadRacersAdmin();
+    await refreshReadOnly();
+  } catch (err) {
+    showMsg("racersMsg", `Error: ${err.message || err}`, "err");
+  }
+}
+
+// ---- Manage Teams ----
+
+async function loadTeamsAdmin() {
+  const res = await fetch("/api/team-list");
+  const teams = await res.json();
+  const body = document.querySelector("#teamsTable tbody");
+  body.innerHTML = "";
+
+  teams.forEach((team) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><input type="text" class="t-name" value="${team.name}"></td>
+      <td>${team.rider_count}</td>
+      <td><button class="btn btn-save">Rename</button></td>
+      <td><button class="btn btn-delete">Delete</button></td>
+    `;
+    tr.querySelector(".btn-save").addEventListener("click", () => renameTeam(team.name, tr));
+    tr.querySelector(".btn-delete").addEventListener("click", () => deleteTeam(team.name));
+    body.appendChild(tr);
+  });
+}
+
+async function renameTeam(originalName, row) {
+  const newName = row.querySelector(".t-name").value.trim();
+  if (!newName) {
+    showMsg("teamsMsg", "Team name can't be blank.", "err");
+    return;
+  }
+  try {
+    const res = await fetch(`/api/team-list/${encodeURIComponent(originalName)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newName }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server error (${res.status})`);
+    showMsg("teamsMsg", `Renamed '${originalName}' to '${newName}'.`, "ok");
+    await loadTeamsAdmin();
+    await loadRacersAdmin();
+    await refreshReadOnly();
+  } catch (err) {
+    showMsg("teamsMsg", `Error: ${err.message || err}`, "err");
+  }
+}
+
+async function deleteTeam(name) {
+  if (!confirm(`Delete team '${name}'? Riders on this team will become unassigned, not deleted.`)) return;
+  try {
+    const res = await fetch(`/api/team-list/${encodeURIComponent(name)}`, { method: "DELETE" });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server error (${res.status})`);
+    showMsg("teamsMsg", `Deleted team '${name}'.`, "ok");
+    await loadTeamsAdmin();
+    await loadRacersAdmin();
+    await refreshReadOnly();
+  } catch (err) {
+    showMsg("teamsMsg", `Error: ${err.message || err}`, "err");
+  }
+}
+
+document.getElementById("addTeamBtn").addEventListener("click", async () => {
+  const nameEl = document.getElementById("newTeamName");
+  const name = nameEl.value.trim();
+  if (!name) {
+    showMsg("teamsMsg", "Enter a team name first.", "err");
+    return;
+  }
+  try {
+    const res = await fetch("/api/team-list", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server error (${res.status})`);
+    nameEl.value = "";
+    showMsg("teamsMsg", `Added team '${name}'.`, "ok");
+    await loadTeamsAdmin();
+    await loadRacersAdmin();
+  } catch (err) {
+    showMsg("teamsMsg", `Error: ${err.message || err}`, "err");
+  }
+});
+
+// ---- Manage Scans ----
+
+async function loadScansAdmin() {
+  const res = await fetch("/api/scans");
+  const scans = await res.json();
+  const body = document.querySelector("#scansTable tbody");
+  body.innerHTML = "";
+
+  scans.slice(0, 50).forEach((scan) => {
+    const tr = document.createElement("tr");
+    tr.dataset.number = scan.number;
+    tr.dataset.gate = scan.gate;
+    tr.innerHTML = `
+      <td><input type="text" class="s-number" value="${scan.number}"></td>
+      <td>
+        <select class="s-gate">
+          <option value="1" ${scan.gate === "1" ? "selected" : ""}>1</option>
+          <option value="2" ${scan.gate === "2" ? "selected" : ""}>2</option>
+          <option value="3" ${scan.gate === "3" ? "selected" : ""}>3</option>
+        </select>
+      </td>
+      <td><input type="text" class="s-time" value="${scan.scanned_at}"></td>
+      <td><button class="btn btn-save">Save</button></td>
+      <td><button class="btn btn-delete">Delete</button></td>
+    `;
+    tr.querySelector(".btn-save").addEventListener("click", () => saveScan(scan.id, tr));
+    tr.querySelector(".btn-delete").addEventListener("click", () => deleteScan(scan.id));
+    body.appendChild(tr);
+  });
+
+  applyScanFilter();
+}
+
+function applyScanFilter() {
+  const numberTerm = document.getElementById("scanFilterNumber").value.trim().toLowerCase();
+  const gateTerm = document.getElementById("scanFilterGate").value;
+  document.querySelectorAll("#scansTable tbody tr").forEach((tr) => {
+    const matchesNumber = !numberTerm || tr.dataset.number.toLowerCase().includes(numberTerm);
+    const matchesGate = !gateTerm || tr.dataset.gate === gateTerm;
+    tr.style.display = (matchesNumber && matchesGate) ? "" : "none";
+  });
+}
+
+document.getElementById("scanFilterNumber").addEventListener("input", applyScanFilter);
+document.getElementById("scanFilterGate").addEventListener("change", applyScanFilter);
+
+async function saveScan(id, row) {
+  const number = row.querySelector(".s-number").value.trim();
+  const gate = row.querySelector(".s-gate").value;
+  const scanned_at = row.querySelector(".s-time").value.trim();
+
+  try {
+    const res = await fetch(`/api/scans/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number, gate, scanned_at }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server error (${res.status})`);
+    showMsg("scansMsg", `Saved scan #${id}.`, "ok");
+    await loadScansAdmin();
+    await refreshReadOnly();
+  } catch (err) {
+    showMsg("scansMsg", `Error: ${err.message || err}`, "err");
+  }
+}
+
+async function deleteScan(id) {
+  if (!confirm(`Delete scan #${id}? This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`/api/scans/${id}`, { method: "DELETE" });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server error (${res.status})`);
+    showMsg("scansMsg", `Deleted scan #${id}.`, "ok");
+    await loadScansAdmin();
+    await refreshReadOnly();
+  } catch (err) {
+    showMsg("scansMsg", `Error: ${err.message || err}`, "err");
+  }
+}
+
+document.getElementById("addScanBtn").addEventListener("click", async () => {
+  const numberEl = document.getElementById("newScanNumber");
+  const gateEl = document.getElementById("newScanGate");
+  const timeEl = document.getElementById("newScanTime");
+
+  const number = numberEl.value.trim();
+  const gate = gateEl.value;
+  const scanned_at = timeEl.value.trim();
+
+  if (!number) {
+    showMsg("scansMsg", "Enter a rider number first.", "err");
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/scans/manual", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number, gate, scanned_at }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server error (${res.status})`);
+    numberEl.value = "";
+    timeEl.value = "";
+    showMsg("scansMsg", `Added scan for #${number} at Gate ${gate}.`, "ok");
+    await loadScansAdmin();
+    await refreshReadOnly();
+  } catch (err) {
+    showMsg("scansMsg", `Error: ${err.message || err}`, "err");
+  }
+});
+
+// ---- API Explorer ----
+
+const apiEndpointSelect = document.getElementById("apiEndpointSelect");
+const apiRacerNumber = document.getElementById("apiRacerNumber");
+const apiOutput = document.getElementById("apiOutput");
+
+apiEndpointSelect.addEventListener("change", () => {
+  apiRacerNumber.style.display = apiEndpointSelect.value === "/api/racer/" ? "" : "none";
+});
+
+document.getElementById("apiFetchBtn").addEventListener("click", async () => {
+  let path = apiEndpointSelect.value;
+
+  if (path === "/api/racer/") {
+    const number = apiRacerNumber.value.trim();
+    if (!number) {
+      showMsg("apiMsg", "Enter a rider number first.", "err");
+      return;
+    }
+    path += encodeURIComponent(number);
+  }
+
+  try {
+    const res = await fetch(path);
+    const text = await res.text();
+    let pretty = text;
+    try {
+      pretty = JSON.stringify(JSON.parse(text), null, 2);
+    } catch (e) {
+      // Not JSON (e.g. an HTML error page) -- show raw text as-is.
+    }
+    apiOutput.textContent = pretty;
+    showMsg("apiMsg", `GET ${path} -> HTTP ${res.status}`, res.ok ? "ok" : "err");
+  } catch (err) {
+    apiOutput.textContent = "";
+    showMsg("apiMsg", `Error: ${err.message || err}`, "err");
+  }
+});
+
+// ---- initial load for the management sections ----
+loadRacersAdmin();
+loadTeamsAdmin();
+loadScansAdmin();
+</script>
+</body>
+</html>
